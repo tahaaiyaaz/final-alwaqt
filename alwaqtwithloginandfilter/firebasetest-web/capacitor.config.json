@@ -1,0 +1,16 @@
+{
+  "appId": "com.froarit.alwaqtweb",
+  "appName": "firebasetest-web",
+  "webDir": "dist",
+  "plugins": {
+    "GoogleAuth": {
+      "scopes": [
+        "profile",
+        "email"
+      ],
+      "serverClientId": "1019099666555-3l4avatplemsa5drh2a0o7gnob0i3a0s.apps.googleusercontent.com",
+      "androidClientId": "1019099666555-4i6k0r3pa52hf8b3j2pmbddp3tkpe7bl.apps.googleusercontent.com",
+      "forceCodeForRefreshToken": true
+    }
+  }
+}
