@@ -18,17 +18,33 @@ android {
     }
     signingConfigs {
         release {
-            storeFile file('alwaqt-release-key.jks')
-            storePassword 'alwaqt123'
-            keyAlias 'alwaqt-key-alias'
-            keyPassword 'alwaqt123'
+            def keyPropsFile = rootProject.file("key.properties")
+            def keyProps = new Properties()
+            if (keyPropsFile.exists()) {
+                keyProps.load(new FileInputStream(keyPropsFile))
+            }
+
+            def storeFilePath = System.getenv("ALWAQT_KEYSTORE_FILE") ?: keyProps.getProperty('storeFile') ?: 'alwaqt-release-key.jks'
+            def storePasswordVal = System.getenv("ALWAQT_KEYSTORE_PASSWORD") ?: keyProps.getProperty('storePassword') ?: (project.findProperty('storePassword') ?: '')
+            def keyAliasVal = System.getenv("ALWAQT_KEY_ALIAS") ?: keyProps.getProperty('keyAlias') ?: 'alwaqt-key-alias'
+            def keyPasswordVal = System.getenv("ALWAQT_KEY_PASSWORD") ?: keyProps.getProperty('keyPassword') ?: (project.findProperty('keyPassword') ?: '')
+
+            def resolvedFile = file(storeFilePath)
+            if (resolvedFile.exists() && storePasswordVal) {
+                storeFile resolvedFile
+                storePassword storePasswordVal
+                keyAlias keyAliasVal
+                keyPassword keyPasswordVal
+            }
         }
     }
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
-            signingConfig signingConfigs.release
+            if (signingConfigs.release.storeFile != null) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 }
