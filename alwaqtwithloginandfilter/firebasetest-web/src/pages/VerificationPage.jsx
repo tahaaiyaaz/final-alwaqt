@@ -5,6 +5,7 @@ import { MapContainer, TileLayer, Marker, useMap, Polyline } from "react-leaflet
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { API_BASE } from "../config";
+import { getBearerToken } from "../firebaseConfig";
 
 // Custom Leaflet Icons for Old (Blue) and New (Red/Amber)
 const oldPosIcon = new L.Icon({
@@ -44,6 +45,8 @@ export default function VerificationPage() {
     const [verificationPhone, setVerificationPhone] = useState("");
     const [verificationDescription, setVerificationDescription] = useState("");
     const [submitting, setSubmitting] = useState(false);
+    const [user] = useState(() => JSON.parse(localStorage.getItem("@user") || "null"));
+    const isAdmin = Boolean(user?.isAdmin || item?.isAdminReview);
 
     if (!item) {
         return (
@@ -66,6 +69,47 @@ export default function VerificationPage() {
             .join(' ');
     };
 
+    const handleAdminDecision = async (decision) => {
+        setSubmitting(true);
+        try {
+            const token = await getBearerToken();
+            const baseUrl = API_BASE || window.location.origin;
+            const endpoint = decision === 'approve'
+                ? `${baseUrl}/api/admin/approveMasjid`
+                : `${baseUrl}/api/admin/rejectMasjid`;
+
+            const res = await fetch(endpoint, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    ...(token ? { "Authorization": `Bearer ${token}` } : {})
+                },
+                body: JSON.stringify({ masjidId: item.id })
+            });
+
+            const data = await res.json();
+            if (res.ok) {
+                // Save to localStorage so this item won't appear again for this user
+                const existing = JSON.parse(localStorage.getItem('verified_masjids') || '[]');
+                if (!existing.includes(item.id)) {
+                    existing.push(item.id);
+                    localStorage.setItem('verified_masjids', JSON.stringify(existing));
+                }
+                alert(decision === 'approve'
+                    ? "Masjid has been approved and is now live on the map!"
+                    : "Masjid submission has been rejected.");
+                navigate("/", { replace: true });
+            } else {
+                alert(data.error || "Failed to process admin action.");
+            }
+        } catch (err) {
+            console.error("Admin decision error:", err);
+            alert("Network error processing admin action.");
+        } finally {
+            setSubmitting(false);
+        }
+    };
+
     const handleVerify = async (decision) => {
         if (!verificationPhone || verificationPhone.length < 10) {
             alert("Please provide a valid 10-digit mobile number.");
@@ -76,10 +120,6 @@ export default function VerificationPage() {
         try {
             const baseUrl = API_BASE || window.location.origin;
             let endpoint, body;
-
-            // In our current backend schema, verifications table only captures the fact that someone verified it.
-            // Ideally, the decision should be passed to the backend. We will pass the decision in the body.
-            // (Note: Currently backend only requires verifierPhone, but passing decision is good practice for future expansion).
 
             if (item.type === 'new_masjid') {
                 endpoint = `${baseUrl}/api/verifyMasjid`;
@@ -134,9 +174,9 @@ export default function VerificationPage() {
     return (
         <div style={{ minHeight: "100vh", backgroundColor: "#F3F4F6", paddingBottom: 60, fontFamily: "'Inter', sans-serif" }}>
             {/* Header */}
-            <div style={{ backgroundColor: "#111827", color: "white", padding: "20px", display: "flex", alignItems: "center", gap: 15 }}>
+            <div style={{ backgroundColor: "#111827", color: "white", padding: "calc(15px + var(--safe-area-top, 0px)) 20px 15px", display: "flex", alignItems: "center", gap: 15 }}>
                 <IoArrowBack size={24} style={{ cursor: "pointer" }} onClick={() => navigate(-1)} />
-                <h2 style={{ margin: 0, fontSize: 18, fontWeight: "700" }}>Verify Community Report</h2>
+                <h2 style={{ margin: 0, fontSize: 18, fontWeight: "700" }}>{item.type === 'new_masjid' && isAdmin ? 'Admin Masjid Review' : 'Verify Community Report'}</h2>
             </div>
 
             <div style={{ padding: 20 }}>
@@ -146,15 +186,15 @@ export default function VerificationPage() {
                         <h3 style={{ margin: 0, fontSize: 20, fontWeight: "800", color: "#111827" }}>{toPascalCase(item.name)}</h3>
                         <span style={{
                             fontSize: 12, fontWeight: "700", padding: "4px 10px", borderRadius: 12,
-                            backgroundColor: reportType === 'new_masjid' ? '#D1FAE5' : reportType === 'location_change' ? '#FEF3C7' : '#FEE2E2',
-                            color: reportType === 'new_masjid' ? '#065F46' : reportType === 'location_change' ? '#92400E' : '#991B1B'
+                            backgroundColor: item.type === 'new_masjid' && isAdmin ? '#DCFCE7' : reportType === 'new_masjid' ? '#D1FAE5' : reportType === 'location_change' ? '#FEF3C7' : '#FEE2E2',
+                            color: item.type === 'new_masjid' && isAdmin ? '#047857' : reportType === 'new_masjid' ? '#065F46' : reportType === 'location_change' ? '#92400E' : '#991B1B'
                         }}>
-                            {reportType === 'new_masjid' ? '🆕 New Masjid' : reportType === 'location_change' ? '📍 Location Change' : '❌ Not Found'}
+                            {item.type === 'new_masjid' && isAdmin ? '🛡️ Admin Review' : reportType === 'new_masjid' ? '🆕 New Masjid' : reportType === 'location_change' ? '📍 Location Change' : '❌ Not Found'}
                         </span>
                     </div>
 
                     <p style={{ fontSize: 13, color: "#6B7280", lineHeight: 1.5, marginBottom: 15 }}>
-                        {reportType === 'new_masjid' && "A user has added this new masjid. Please verify if it exists at this location."}
+                        {reportType === 'new_masjid' && (isAdmin ? "As an administrator, review this newly added masjid and approve it to make it live on the map." : "A user has added this new masjid. Please verify if it exists at this location.")}
                         {reportType === 'location_change' && "A user reported that this masjid is located somewhere else. Please review the old and new locations."}
                         {reportType === 'does_not_exist' && "A user reported that this masjid no longer exists at this location."}
                     </p>
@@ -214,72 +254,112 @@ export default function VerificationPage() {
                     )}
                 </div>
 
-                {/* Verification Action Module */}
-                <div style={{ backgroundColor: "white", borderRadius: 12, padding: 20, boxShadow: "0 4px 6px -1px rgba(0,0,0,0.1)" }}>
-                    <h4 style={{ margin: "0 0 15px 0", fontSize: 15, fontWeight: "700", color: "#111827" }}>Your Feedback</h4>
+                {/* Action Module */}
+                {item.type === 'new_masjid' && isAdmin ? (
+                    <div style={{ backgroundColor: "white", borderRadius: 12, padding: 20, boxShadow: "0 4px 6px -1px rgba(0,0,0,0.1)" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+                            <span style={{ fontSize: 24 }}>🛡️</span>
+                            <div>
+                                <h4 style={{ margin: 0, fontSize: 16, fontWeight: "700", color: "#111827" }}>Administrator Decision</h4>
+                                <p style={{ margin: 0, fontSize: 12, color: "#6B7280" }}>Your action directly publishes or rejects this masjid nationwide.</p>
+                            </div>
+                        </div>
 
-                    <div style={{ marginBottom: 20 }}>
-                        <label style={{ fontSize: 13, fontWeight: "600", color: "#374151", marginBottom: 6, display: "block" }}>
-                            📱 Enter your mobile number to verify:
-                        </label>
-                        <input
-                            type="tel"
-                            placeholder="e.g. 9876543210"
-                            value={verificationPhone}
-                            onChange={(e) => setVerificationPhone(e.target.value)}
-                            style={{ width: "100%", padding: "12px", borderRadius: 8, border: "1px solid #D1D5DB", fontSize: 15, outline: "none", boxSizing: "border-box", backgroundColor: "#F9FAFB", marginBottom: 15 }}
-                        />
-
-                        <label style={{ fontSize: 13, fontWeight: "600", color: "#374151", marginBottom: 6, display: "block" }}>
-                            📝 Additional Comments (Optional):
-                        </label>
-                        <textarea
-                            placeholder="Provide any extra context, describe the location, etc..."
-                            value={verificationDescription}
-                            onChange={(e) => setVerificationDescription(e.target.value)}
-                            rows={3}
-                            style={{ width: "100%", padding: "12px", borderRadius: 8, border: "1px solid #D1D5DB", fontSize: 14, outline: "none", boxSizing: "border-box", backgroundColor: "#F9FAFB", resize: "vertical" }}
-                        />
+                        <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 18 }}>
+                            <button
+                                disabled={submitting}
+                                onClick={() => handleAdminDecision('approve')}
+                                style={{
+                                    display: "flex", alignItems: "center", gap: 8, justifyContent: "center",
+                                    width: "100%", padding: "14px", borderRadius: 10,
+                                    background: "#10B981", color: "white", fontWeight: "700", fontSize: 15, border: "none",
+                                    cursor: submitting ? "not-allowed" : "pointer", opacity: submitting ? 0.7 : 1,
+                                    boxShadow: "0 4px 12px rgba(16,185,129,0.25)"
+                                }}
+                            >
+                                <IoCheckmarkCircle size={22} /> Approve Masjid (Make Live on Map)
+                            </button>
+                            <button
+                                disabled={submitting}
+                                onClick={() => handleAdminDecision('reject')}
+                                style={{
+                                    display: "flex", alignItems: "center", gap: 8, justifyContent: "center",
+                                    width: "100%", padding: "14px", borderRadius: 10,
+                                    background: "#EF4444", color: "white", fontWeight: "600", fontSize: 14, border: "none",
+                                    cursor: submitting ? "not-allowed" : "pointer", opacity: submitting ? 0.7 : 1
+                                }}
+                            >
+                                <IoCloseCircle size={20} /> Reject Masjid Submission
+                            </button>
+                        </div>
                     </div>
+                ) : (
+                    <div style={{ backgroundColor: "white", borderRadius: 12, padding: 20, boxShadow: "0 4px 6px -1px rgba(0,0,0,0.1)" }}>
+                        <h4 style={{ margin: "0 0 15px 0", fontSize: 15, fontWeight: "700", color: "#111827" }}>Your Feedback</h4>
 
-                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                        {reportType === 'location_change' && (
-                            <>
-                                <button disabled={submitting} onClick={() => handleVerify('approve_new')} style={actionBtnStyle("#10B981")}>
-                                    <IoCheckmarkCircle size={20} /> Yes, the red pin (New Location) is correct
-                                </button>
-                                <button disabled={submitting} onClick={() => handleVerify('reject_new')} style={actionBtnStyle("#6B7280")}>
-                                    <IoCloseCircle size={20} /> No, the blue pin (Old Location) is correct
-                                </button>
-                                <button disabled={submitting} onClick={() => handleVerify('does_not_exist')} style={actionBtnStyle("#EF4444")}>
-                                    <IoHelpCircle size={20} /> Neither, the masjid does not exist
-                                </button>
-                            </>
-                        )}
+                        <div style={{ marginBottom: 20 }}>
+                            <label style={{ fontSize: 13, fontWeight: "600", color: "#374151", marginBottom: 6, display: "block" }}>
+                                📱 Enter your mobile number to verify:
+                            </label>
+                            <input
+                                type="tel"
+                                placeholder="e.g. 9876543210"
+                                value={verificationPhone}
+                                onChange={(e) => setVerificationPhone(e.target.value)}
+                                style={{ width: "100%", padding: "12px", borderRadius: 8, border: "1px solid #D1D5DB", fontSize: 15, outline: "none", boxSizing: "border-box", backgroundColor: "#F9FAFB", marginBottom: 15 }}
+                            />
 
-                        {reportType === 'does_not_exist' && (
-                            <>
-                                <button disabled={submitting} onClick={() => handleVerify('approve_not_exist')} style={actionBtnStyle("#EF4444")}>
-                                    <IoCheckmarkCircle size={20} /> Yes, the masjid no longer exists
-                                </button>
-                                <button disabled={submitting} onClick={() => handleVerify('reject_not_exist')} style={actionBtnStyle("#10B981")}>
-                                    <IoCloseCircle size={20} /> No, the masjid is still there
-                                </button>
-                            </>
-                        )}
+                            <label style={{ fontSize: 13, fontWeight: "600", color: "#374151", marginBottom: 6, display: "block" }}>
+                                📝 Additional Comments (Optional):
+                            </label>
+                            <textarea
+                                placeholder="Provide any extra context, describe the location, etc..."
+                                value={verificationDescription}
+                                onChange={(e) => setVerificationDescription(e.target.value)}
+                                rows={3}
+                                style={{ width: "100%", padding: "12px", borderRadius: 8, border: "1px solid #D1D5DB", fontSize: 14, outline: "none", boxSizing: "border-box", backgroundColor: "#F9FAFB", resize: "vertical" }}
+                            />
+                        </div>
 
-                        {reportType === 'new_masjid' && (
-                            <>
-                                <button disabled={submitting} onClick={() => handleVerify('approve_new_masjid')} style={actionBtnStyle("#10B981")}>
-                                    <IoCheckmarkCircle size={20} /> Yes, this masjid exists here
-                                </button>
-                                <button disabled={submitting} onClick={() => handleVerify('reject_new_masjid')} style={actionBtnStyle("#EF4444")}>
-                                    <IoCloseCircle size={20} /> No, this masjid does not exist
-                                </button>
-                            </>
-                        )}
+                        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                            {reportType === 'location_change' && (
+                                <>
+                                    <button disabled={submitting} onClick={() => handleVerify('approve_new')} style={actionBtnStyle("#10B981")}>
+                                        <IoCheckmarkCircle size={20} /> Yes, the red pin (New Location) is correct
+                                    </button>
+                                    <button disabled={submitting} onClick={() => handleVerify('reject_new')} style={actionBtnStyle("#6B7280")}>
+                                        <IoCloseCircle size={20} /> No, the blue pin (Old Location) is correct
+                                    </button>
+                                    <button disabled={submitting} onClick={() => handleVerify('does_not_exist')} style={actionBtnStyle("#EF4444")}>
+                                        <IoHelpCircle size={20} /> Neither, the masjid does not exist
+                                    </button>
+                                </>
+                            )}
+
+                            {reportType === 'does_not_exist' && (
+                                <>
+                                    <button disabled={submitting} onClick={() => handleVerify('approve_not_exist')} style={actionBtnStyle("#EF4444")}>
+                                        <IoCheckmarkCircle size={20} /> Yes, the masjid no longer exists
+                                    </button>
+                                    <button disabled={submitting} onClick={() => handleVerify('reject_not_exist')} style={actionBtnStyle("#10B981")}>
+                                        <IoCloseCircle size={20} /> No, the masjid is still there
+                                    </button>
+                                </>
+                            )}
+
+                            {reportType === 'new_masjid' && (
+                                <>
+                                    <button disabled={submitting} onClick={() => handleVerify('approve_new_masjid')} style={actionBtnStyle("#10B981")}>
+                                        <IoCheckmarkCircle size={20} /> Yes, this masjid exists here
+                                    </button>
+                                    <button disabled={submitting} onClick={() => handleVerify('reject_new_masjid')} style={actionBtnStyle("#EF4444")}>
+                                        <IoCloseCircle size={20} /> No, this masjid does not exist
+                                    </button>
+                                </>
+                            )}
+                        </div>
                     </div>
-                </div>
+                )}
             </div>
         </div>
     );

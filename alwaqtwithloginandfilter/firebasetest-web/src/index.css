@@ -1,5 +1,18 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
+:root {
+  --safe-area-top: env(safe-area-inset-top, 0px);
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-area-left: env(safe-area-inset-left, 0px);
+  --safe-area-right: env(safe-area-inset-right, 0px);
+}
+
+/* Edge-to-edge support for Android & iOS native mobile containers */
+html.is-native,
+html.is-standalone {
+  --safe-area-top: max(env(safe-area-inset-top, 0px), 32px);
+}
+
 *,
 *::before,
 *::after {
@@ -52,9 +65,7 @@ a {
 
 .page-content {
   flex: 1;
-
-  padding-bottom: 35px;
-  /* margin-bottom: 80px; */
+  padding-bottom: calc(35px + var(--safe-area-bottom, 0px));
   /* space for bottom nav */
   overflow-y: auto;
 }
@@ -62,7 +73,7 @@ a {
 /* Bottom Navigation */
 .bottom-nav {
   position: fixed;
-  bottom: 20px;
+  bottom: calc(20px + var(--safe-area-bottom, 0px));
   left: 20px;
   right: 20px;
   display: flex;
@@ -399,7 +410,7 @@ a {
 
 /* Header area */
 .page-header {
-  padding: 25px 20px 15px;
+  padding: calc(18px + var(--safe-area-top, 0px)) 20px 15px;
   background: #fff;
   border-radius: 0 0 30px 30px;
   margin-bottom: 10px;
@@ -600,6 +611,11 @@ a {
   align-items: center;
   min-height: 70vh;
   gap: 20px;
+  padding-top: var(--safe-area-top, 0px);
+}
+
+.safe-page-container {
+  padding: calc(20px + var(--safe-area-top, 0px)) 20px 20px 20px;
 }
 
 /* Divider */

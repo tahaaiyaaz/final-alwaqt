@@ -142,7 +142,7 @@ export default function MapPage() {
         <div style={{ height: "100vh", width: "100vw", position: "relative", display: "flex", flexDirection: "column", background: "#f0f0f0" }}>
             {/* Overlay Header - Fixed and prominent */}
             <div style={{
-                position: "absolute", top: 55, left: 15, right: 15,
+                position: "absolute", top: "calc(16px + var(--safe-area-top, 0px))", left: 15, right: 15,
                 zIndex: 1000, display: "flex", gap: 10, alignItems: "center",
                 backgroundColor: "rgba(255,255,255,0.9)", padding: "10px", borderRadius: "12px",
                 boxShadow: "0 4px 12px rgba(0,0,0,0.15)", backdropFilter: "blur(8px)"

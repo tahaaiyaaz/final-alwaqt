@@ -5,6 +5,8 @@ import { Capacitor } from '@capacitor/core';
 
 import { IoLogoGoogle } from "react-icons/io5";
 import { API_BASE } from "../config";
+import { GoogleAuthProvider, signInWithCredential } from "firebase/auth";
+import { auth, firebaseSignOut, getBearerToken } from "../firebaseConfig";
 
 export default function AccountsPage() {
     const [user, setUser] = useState(null);
@@ -16,15 +18,35 @@ export default function AccountsPage() {
     useEffect(() => {
         // Initialize Google Auth (required on ALL platforms)
         GoogleAuth.initialize({
-            clientId: '1019099666555-3l4avatplemsa5drh2a0o7gnob0i3a0s.apps.googleusercontent.com',
+            clientId: '475951667280-nc58b2tqb3rr5f2fc6hcamdnlhlq18id.apps.googleusercontent.com',
             scopes: ['profile', 'email'],
             grantOfflineAccess: true,
         });
 
-        // Check localStorage for existing session
+        // Check localStorage for existing session & sync role
         const stored = localStorage.getItem("@user");
         if (stored) {
-            setUser(JSON.parse(stored));
+            const parsed = JSON.parse(stored);
+            setUser(parsed);
+            (async () => {
+                try {
+                    const token = await getBearerToken();
+                    if (token) {
+                        const res = await fetch(`${API_BASE}/api/user/me`, {
+                            headers: { Authorization: `Bearer ${token}` }
+                        });
+                        if (res.ok) {
+                            const data = await res.json();
+                            if (data?.userdata) {
+                                localStorage.setItem("@user", JSON.stringify(data.userdata));
+                                setUser(data.userdata);
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.warn("Could not sync user role:", e);
+                }
+            })();
         }
     }, []);
 
@@ -41,7 +63,7 @@ export default function AccountsPage() {
             if (data.userdata) {
                 localStorage.setItem("@user", JSON.stringify(data.userdata));
                 setUser(data.userdata);
-                
+
                 // First-time Verification Prompt routing
                 if (!localStorage.getItem("hasSeenVerificationPrompt")) {
                     localStorage.setItem("hasSeenVerificationPrompt", "true");
@@ -61,8 +83,30 @@ export default function AccountsPage() {
             const result = await GoogleAuth.signIn();
 
             if (result) {
+                const googleIdToken = result.authentication?.idToken || result.idToken;
+                let firebaseUid = result.id;
+                let bearerToken = null;
+
+                // Connect Google credentials to Firebase to obtain genuine Firebase Bearer ID Token
+                if (googleIdToken) {
+                    try {
+                        const credential = GoogleAuthProvider.credential(googleIdToken);
+                        const userCred = await signInWithCredential(auth, credential);
+                        firebaseUid = userCred.user.uid;
+                        bearerToken = await userCred.user.getIdToken();
+                    } catch (fbErr) {
+                        console.warn("Firebase credential sign-in note:", fbErr);
+                        // Fallback: use the Google ID token itself
+                        bearerToken = googleIdToken;
+                    }
+                }
+
+                if (bearerToken) {
+                    localStorage.setItem("@authToken", bearerToken);
+                }
+
                 const appUser = {
-                    id: result.id || result.authentication?.idToken,
+                    id: firebaseUid || result.id || "google-user",
                     name: result.name || result.displayName || "Google User",
                     email: result.email,
                 };
@@ -83,11 +127,17 @@ export default function AccountsPage() {
 
     const handleSignOut = async () => {
         try {
+            await firebaseSignOut();
+        } catch (fbErr) {
+            console.warn("Firebase sign-out note:", fbErr);
+        }
+        try {
             await GoogleAuth.signOut();
         } catch (err) {
             console.error("Sign-out error (ignoring):", err);
         }
         localStorage.removeItem("@user");
+        localStorage.removeItem("@authToken");
         setUser(null);
     };
 
@@ -109,7 +159,7 @@ export default function AccountsPage() {
     }
 
     return (
-        <div style={{ padding: 20 }}>
+        <div className="safe-page-container">
             <div className="card">
                 <h2 style={{ fontSize: 22, fontWeight: "bold", color: "#10B981", textAlign: "center", marginBottom: 20 }}>
                     Account Details
@@ -129,6 +179,18 @@ export default function AccountsPage() {
                         <div>
                             <span style={{ fontSize: 12, color: "#6B7280" }}>Mobile</span>
                             <p style={{ fontSize: 16, fontWeight: 600 }}>{user.mobileNumber}</p>
+                        </div>
+                    </>
+                )}
+                {user.isAdmin && (
+                    <>
+                        <div className="divider" />
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", backgroundColor: "#ECFDF5", borderRadius: 10, border: "1px solid #A7F3D0" }}>
+                            <span style={{ fontSize: 20 }}>🛡️</span>
+                            <div>
+                                <span style={{ fontSize: 11, fontWeight: 700, color: "#065F46", textTransform: "uppercase", letterSpacing: "0.5px" }}>Role</span>
+                                <p style={{ margin: 0, fontSize: 14, fontWeight: 700, color: "#047857" }}>System Administrator</p>
+                            </div>
                         </div>
                     </>
                 )}

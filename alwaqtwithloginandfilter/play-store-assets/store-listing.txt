@@ -1,0 +1,26 @@
+==================================================
+1. APP NAME / TITLE (Max 30 characters)
+==================================================
+Al Waqt
+
+==================================================
+2. SHORT DESCRIPTION (Max 80 characters)
+==================================================
+Find nearby mosques, check accurate Jamat prayer timings, and follow masjids.
+
+==================================================
+3. FULL DESCRIPTION (Max 4000 characters)
+==================================================
+Al Waqt is a premium, community-driven, and completely ad-free application designed to help you find local masjids (mosques) and keep track of accurate, up-to-date Jamat and prayer timings.
+
+Whether you are traveling to a new city or looking for Jamat timings in your local neighborhood, Al Waqt provides quick, location-based access to the closest places of worship.
+
+Key Features:
+• Accurate Jamat & Prayer Timings: View real-time timings for Fajr, Dhuhr, Asr, Maghrib, Isha, Jummah, and Taraweeh.
+• Nearby Mosque Finder: Automatically locate masjids near your exact location with built-in map navigation.
+• Follow Your Masjids: Save your favorite masjids to quickly access their schedules and view local updates.
+• Community Verifications: Participate in keeping timings accurate! Users and Muazzins can suggest updates, upload timing charts, and verify mosque details.
+• Events & Announcements: Stay informed about weekly bayans, special lectures, and community events happening at followed masjids.
+• Clean & Ad-Free: A completely distraction-free experience designed with beautiful modern aesthetics.
+
+Keep your prayers on time, wherever you are, with Al Waqt.

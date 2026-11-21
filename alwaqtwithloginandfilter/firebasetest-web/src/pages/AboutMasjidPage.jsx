@@ -182,9 +182,17 @@ export default function AboutMasjidPage() {
     const isVerified = masjidData?.isVerified !== false;
 
     return (
-        <div className="about-page-content page-padding" style={{ paddingBottom: 100, paddingTop: 80 }}>
+        <div className="about-page-content page-padding" style={{ paddingBottom: 100, paddingTop: "calc(80px + var(--safe-area-top, 0px))" }}>
             {/* Fixed Top Navbar */}
-            <div style={{ position: "fixed", top: 0, left: 0, right: 0, height: 60, backgroundColor: "#fff", display: "flex", alignItems: "center", padding: "0 20px", boxShadow: "0 2px 5px rgba(0,0,0,0.05)", zIndex: 1000 }}>
+            <div style={{
+                position: "fixed", top: 0, left: 0, right: 0,
+                height: "calc(60px + var(--safe-area-top, 0px))",
+                paddingTop: "var(--safe-area-top, 0px)",
+                paddingLeft: "20px", paddingRight: "20px",
+                boxSizing: "border-box",
+                backgroundColor: "#fff", display: "flex", alignItems: "center",
+                boxShadow: "0 2px 5px rgba(0,0,0,0.05)", zIndex: 1000
+            }}>
                 <button onClick={() => {
                     if (state?.returnUrl) {
                         navigate(state.returnUrl, { state: state.returnState });

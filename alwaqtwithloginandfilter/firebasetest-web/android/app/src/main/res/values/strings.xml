@@ -1,8 +1,8 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">firebasetest-web</string>
-    <string name="title_activity_main">firebasetest-web</string>
+    <string name="app_name">Al Waqt</string>
+    <string name="title_activity_main">Al Waqt</string>
     <string name="package_name">com.froarit.alwaqtweb</string>
     <string name="custom_url_scheme">com.froarit.alwaqtweb</string>
-    <string name="server_client_id">1019099666555-3l4avatplemsa5drh2a0o7gnob0i3a0s.apps.googleusercontent.com</string>
+    <string name="server_client_id">475951667280-nc58b2tqb3rr5f2fc6hcamdnlhlq18id.apps.googleusercontent.com</string>
 </resources>

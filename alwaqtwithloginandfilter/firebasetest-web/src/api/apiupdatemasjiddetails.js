@@ -1,21 +1,13 @@
 import { API_BASE } from "../config";
+import { getBearerToken } from "../firebaseConfig";
 
 export async function updateMasjidDetails(masjidId, updates, updater = null, verificationData = null) {
   try {
-    // Attach the logged-in user's ID for backend auth validation
-    let userId = null;
-    const stored = localStorage.getItem("@user");
-    if (stored) {
-      try {
-        const user = JSON.parse(stored);
-        if (user && user.userid) userId = user.userid;
-      } catch { /* ignore */ }
-    }
+    const token = await getBearerToken();
 
     const requestBody = {
       masjidId: masjidId,
       updates: updates,
-      userId: userId,
     };
     if (updater) {
       requestBody.updater = updater;
@@ -24,11 +16,16 @@ export async function updateMasjidDetails(masjidId, updates, updater = null, ver
       requestBody.verificationData = verificationData;
     }
 
+    const headers = {
+      "Content-Type": "application/json",
+    };
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+
     const response = await fetch(`${API_BASE}/updateMasjid`, {
       method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers,
       body: JSON.stringify(requestBody),
     });
 

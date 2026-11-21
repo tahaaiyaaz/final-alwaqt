@@ -64,8 +64,8 @@ export default function UpdateTimingsPage({ masjid: propMasjid, isDashboard: pro
                     steps: steps,
                     onDestroyStarted: () => {
                         tourDriver.destroy();
-                        // After Update page tour ends, navigate back to home for the Add Masjid tour
-                        setTourStage('goToAdd');
+                        // End the tour gracefully here. No need to force them to the Add page.
+                        completeTour();
                         navigate('/');
                     }
                 });
@@ -658,12 +658,16 @@ export default function UpdateTimingsPage({ masjid: propMasjid, isDashboard: pro
     };
 
     return (
-        <div style={{ padding: "80px 20px 100px 20px", backgroundColor: "#F3F4F6", minHeight: "100vh" }}>
+        <div style={{ padding: "calc(80px + var(--safe-area-top, 0px)) 20px 100px 20px", backgroundColor: "#F3F4F6", minHeight: "100vh" }}>
             {/* Fixed Top Navbar */}
             <div style={{
                 position: "fixed", top: 0, left: 0, right: 0,
-                height: 60, backgroundColor: "#fff", display: "flex", alignItems: "center",
-                padding: "0 20px", boxShadow: "0 2px 5px rgba(0,0,0,0.05)", zIndex: 1000
+                height: "calc(60px + var(--safe-area-top, 0px))",
+                paddingTop: "var(--safe-area-top, 0px)",
+                paddingLeft: "20px", paddingRight: "20px",
+                boxSizing: "border-box",
+                backgroundColor: "#fff", display: "flex", alignItems: "center",
+                boxShadow: "0 2px 5px rgba(0,0,0,0.05)", zIndex: 1000
             }}>
                 {!isDashboard && (
                     <button onClick={() => navigate(-1)} style={{ background: "transparent", border: "none", cursor: "pointer", marginRight: 15, padding: 0, display: "flex", alignItems: "center" }}>

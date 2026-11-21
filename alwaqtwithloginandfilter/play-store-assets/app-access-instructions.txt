@@ -1,0 +1,14 @@
+==================================================
+APP ACCESS / SIGN-IN INSTRUCTIONS FOR GOOGLE REVIEWERS
+==================================================
+
+When Google Play Console asks you for "App access" details under the content questionnaire:
+
+* Select option:
+  "All functionality is available without special access"
+  (Even though the app has a Google Sign-In button, the main home page and mosque search functionality are fully browseable and accessible as a guest without logging in. The reviewer does not need special credentials to test the core features of the app.)
+
+* If you want to be safe or Google requests credentials anyway:
+  Select: "All or some parts of the app are restricted" and write the following explanation:
+  
+  "The application uses standard Google Sign-In for authentication. The main screens (mosque listings, map, and prayer timing views) are fully accessible as a guest without logging in. To test login-restricted features like adding a masjid or following a masjid, the review team can sign in using any standard Google test account. No password or specialized test credentials are required from our side, as authentication is handled securely by Google."

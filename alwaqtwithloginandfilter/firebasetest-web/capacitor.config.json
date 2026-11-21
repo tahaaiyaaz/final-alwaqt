@@ -1,6 +1,6 @@
 {
   "appId": "com.froarit.alwaqtweb",
-  "appName": "firebasetest-web",
+  "appName": "Al Waqt",
   "webDir": "dist",
   "plugins": {
     "GoogleAuth": {
@@ -8,8 +8,8 @@
         "profile",
         "email"
       ],
-      "serverClientId": "1019099666555-3l4avatplemsa5drh2a0o7gnob0i3a0s.apps.googleusercontent.com",
-      "androidClientId": "1019099666555-4i6k0r3pa52hf8b3j2pmbddp3tkpe7bl.apps.googleusercontent.com",
+      "serverClientId": "475951667280-nc58b2tqb3rr5f2fc6hcamdnlhlq18id.apps.googleusercontent.com",
+      "androidClientId": "475951667280-l38rc470gg1rg25vsbq0hclg71d2hv5b.apps.googleusercontent.com",
       "forceCodeForRefreshToken": true
     }
   }

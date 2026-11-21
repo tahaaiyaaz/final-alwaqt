@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "475951667280",
+    "project_id": "authusersforalwaqt",
+    "storage_bucket": "authusersforalwaqt.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:475951667280:android:68e080e19974ab24dc1955",
+        "android_client_info": {
+          "package_name": "com.froarit.alwaqtweb"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "475951667280-nc58b2tqb3rr5f2fc6hcamdnlhlq18id.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDHgUIT_O5vTvZta-c59o99JiW5Fc6Ax6Y"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "475951667280-nc58b2tqb3rr5f2fc6hcamdnlhlq18id.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

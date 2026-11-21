@@ -245,7 +245,7 @@ export default function AddMasjid() {
             };
 
             await addMasjid(finalData);
-            alert("Masjid added successfully! We will review it soon.");
+            alert("Masjid submitted successfully! It will be reviewed by an administrator before appearing on the map.");
             window.location.href = "/";
         } catch {
             alert("Failed to add masjid. Please try again.");
@@ -256,7 +256,7 @@ export default function AddMasjid() {
     // STEP 1 UI
     if (step === 1) {
         return (
-            <div style={{ padding: 20 }}>
+            <div className="safe-page-container">
                 <h2 style={{ fontSize: 20, fontWeight: "700", marginBottom: 5 }}>Step 1: Check Presence</h2>
                 <p style={{ fontSize: 14, color: "#6B7280", marginBottom: 20 }}>Search for the location to see if the masjid already exists.</p>
 
@@ -366,7 +366,7 @@ export default function AddMasjid() {
     // STEP 2 UI
     if (step === 2) {
         return (
-            <div style={{ padding: 20 }}>
+            <div className="safe-page-container">
                 <h2 style={{ fontSize: 20, fontWeight: "700", marginBottom: 5 }}>Step 2: Masjid Details</h2>
                 <div style={{ backgroundColor: "#FEF2F2", color: "#B91C1C", padding: "10px", borderRadius: "8px", marginBottom: "15px", fontSize: "14px", fontWeight: "600", border: "1px solid #FCA5A5" }}>
                     Fields marked with <span style={{ color: "red" }}>*</span> are mandatory to proceed.
@@ -516,7 +516,7 @@ export default function AddMasjid() {
 
     // STEP 3 UI (Modernized)
     return (
-        <div style={{ padding: 20 }}>
+        <div className="safe-page-container">
             <h2 style={{ fontSize: 20, fontWeight: "700", marginBottom: 5 }}>Step 3: Timings</h2>
 
             <div className="card" style={{ padding: 15, marginBottom: 15 }}>

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { IoClose } from "react-icons/io5";
 import { useMasjid } from "../context/MasjidContext";
+import CustomTimePicker from "./CustomTimePicker";
 
 export default function FilterPopover({ onClose, onApply, initialDistance, initialPrayer }) {
     const { filters } = useMasjid();
@@ -112,17 +113,17 @@ export default function FilterPopover({ onClose, onApply, initialDistance, initi
                             <label className="form-label">
                                 {timeFilter === "after" ? "Show prayers AFTER this time" : "Select Time"}
                             </label>
-                            <input type="time" className="time-input" value={selectedTime} onChange={(e) => setSelectedTime(e.target.value)} />
+                            <CustomTimePicker value={selectedTime} onChange={setSelectedTime} defaultPeriod="PM" />
                         </div>
                     ) : (
                         <div style={{ display: "flex", gap: 15, marginBottom: 20 }}>
                             <div style={{ flex: 1 }}>
                                 <label className="form-label">Start</label>
-                                <input type="time" className="time-input" value={selectedStartTime} onChange={(e) => setSelectedStartTime(e.target.value)} />
+                                <CustomTimePicker value={selectedStartTime} onChange={setSelectedStartTime} defaultPeriod="PM" />
                             </div>
                             <div style={{ flex: 1 }}>
                                 <label className="form-label">End</label>
-                                <input type="time" className="time-input" value={selectedEndTime} onChange={(e) => setSelectedEndTime(e.target.value)} />
+                                <CustomTimePicker value={selectedEndTime} onChange={setSelectedEndTime} defaultPeriod="PM" />
                             </div>
                         </div>
                     )}

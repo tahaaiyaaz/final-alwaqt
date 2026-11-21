@@ -172,11 +172,11 @@ export default function VerificationPrompt() {
     return (
         <div style={{ minHeight: "100vh", backgroundColor: "#F3F4F6", paddingBottom: 60, fontFamily: "'Inter', sans-serif" }}>
             {/* Header section focusing on the prompt */}
-            <div style={{ backgroundColor: "#111827", padding: "40px 20px 30px", textAlign: "center", borderBottomLeftRadius: 24, borderBottomRightRadius: 24, boxShadow: "0 4px 20px rgba(0,0,0,0.1)", position: "relative" }}>
+            <div style={{ backgroundColor: "#111827", padding: "calc(30px + var(--safe-area-top, 0px)) 20px 30px", textAlign: "center", borderBottomLeftRadius: 24, borderBottomRightRadius: 24, boxShadow: "0 4px 20px rgba(0,0,0,0.1)", position: "relative" }}>
                 {/* Skip button at top right */}
                 <button 
                     onClick={() => navigate("/")}
-                    style={{ position: "absolute", top: 15, right: 15, background: "rgba(255,255,255,0.1)", color: "#9CA3AF", border: "none", padding: "6px 12px", borderRadius: 20, fontSize: 13, cursor: "pointer", fontWeight: "600" }}
+                    style={{ position: "absolute", top: "calc(15px + var(--safe-area-top, 0px))", right: 15, background: "rgba(255,255,255,0.1)", color: "#9CA3AF", border: "none", padding: "6px 12px", borderRadius: 20, fontSize: 13, cursor: "pointer", fontWeight: "600" }}
                 >
                     Skip for now →
                 </button>

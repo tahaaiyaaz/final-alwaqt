@@ -38,3 +38,7 @@ firebasetest-web/dist/
 
 # zip files
 *.zip
+
+# Screenshots
+Screenshot*.png
+

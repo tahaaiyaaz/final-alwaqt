@@ -101,7 +101,7 @@ export default function FavoritesPage() {
     };
 
     return (
-        <div style={{ padding: 20 }}>
+        <div className="safe-page-container">
             <h2 style={{ fontSize: 22, fontWeight: "bold", color: "#10B981", marginBottom: 20 }}>
                 ❤️ Following Masjids
             </h2>

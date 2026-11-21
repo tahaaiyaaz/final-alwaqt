@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS users (
   email VARCHAR(255),
   mobile_number VARCHAR(20) DEFAULT NULL,
   user_type ENUM('Muazzin', 'Not Muazzin') DEFAULT NULL,
+  is_admin TINYINT(1) DEFAULT 0,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX idx_firebase_uid (firebase_uid),

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { API_BASE } from "../config";
+import { getBearerToken } from "../firebaseConfig";
 import { useNavigate } from "react-router-dom";
 import SearchBar from "../components/SearchBar";
 import MasjidCard from "../components/MasjidCard";
@@ -100,7 +101,32 @@ import { driver } from "driver.js";
 
 export default function HomePage() {
     const navigate = useNavigate();
-    const { tourActive, tourStage, setTourStage, driverObj, setDriverObj } = useTour();
+    const [user, setUser] = useState(() => JSON.parse(localStorage.getItem("@user") || "null"));
+
+    useEffect(() => {
+        const syncUserRole = async () => {
+            try {
+                const token = await getBearerToken();
+                if (token) {
+                    const baseUrl = API_BASE || window.location.origin;
+                    const res = await fetch(`${baseUrl}/api/user/me`, {
+                        headers: { Authorization: `Bearer ${token}` }
+                    });
+                    if (res.ok) {
+                        const data = await res.json();
+                        if (data?.userdata) {
+                            localStorage.setItem("@user", JSON.stringify(data.userdata));
+                            setUser(data.userdata);
+                        }
+                    }
+                }
+            } catch (e) {
+                console.warn("Could not sync user role:", e);
+            }
+        };
+        syncUserRole();
+    }, []);
+    const { tourActive, tourStage, setTourStage, driverObj, setDriverObj, completeTour } = useTour();
     const {
         location, setLocation,
         locationName, setLocationName,
@@ -223,6 +249,7 @@ export default function HomePage() {
                     ],
                     onDestroyStarted: () => {
                         tourDriver.destroy();
+                        completeTour();
                     }
                 });
 
@@ -237,36 +264,43 @@ export default function HomePage() {
         };
     }, [tourActive, tourStage, masjidData.length]); // use masjidData.length instead of nearbyMasjids (which is defined later)
 
-    // When the UpdateTimingsPage tour finishes, it redirects back here with tourStage='goToAdd'
-    // We need to auto-navigate the user to /add-masjid to continue the tour
-    useEffect(() => {
-        if (tourActive && tourStage === 'goToAdd') {
-            setTimeout(() => {
-                navigate('/add-masjid');
-            }, 300);
-        }
-    }, [tourActive, tourStage]);
-
     const prevRadiusRef = useRef(filters.distance);
+    const hasInitialFetchRef = useRef(false);
+    const isFetchingRef = useRef(false);
 
     useEffect(() => {
         if (location.lat && location.lng) {
             const distChanged = prevRadiusRef.current !== filters.distance;
             const movedDist = lastFetchedCoords ? calculateDistance(location.lat, location.lng, lastFetchedCoords.lat, lastFetchedCoords.lng) : 999;
-            if (masjidData.length === 0 || movedDist > 0.5 || distChanged) {
-                fetchMasjids(filters.distance);
-                prevRadiusRef.current = filters.distance;
-            }
+            
+            // Only fetch if initial fetch hasn't run, or moved > 500m, or distance filter changed.
+            // NEVER refetch simply because masjidData.length === 0 (empty area)!
+            const needsFetch = !hasInitialFetchRef.current || movedDist > 0.5 || distChanged;
 
-            // NEW: Fetch pending masjids for community verification when location updates
-            fetchPendingMasjids(location.lat, location.lng);
+            if (needsFetch && !isFetchingRef.current) {
+                hasInitialFetchRef.current = true;
+                prevRadiusRef.current = filters.distance;
+                fetchMasjids(filters.distance);
+
+                // Fetch pending masjids for community verification when location updates (only if logged in)
+                if (user) {
+                    fetchPendingMasjids(location.lat, location.lng);
+                }
+            }
         }
-    }, [location, filters.distance]);
+    }, [location.lat, location.lng, filters.distance, user?.id || user?.uid]);
 
     const fetchPendingMasjids = async (lat, lng) => {
         try {
             const baseUrl = API_BASE || window.location.origin;
-            const res = await fetch(`${baseUrl}/api/pendingMasjidsNearby?latitude=${lat}&longitude=${lng}&radiusInKm=10`);
+            const token = await getBearerToken();
+            const headers = {};
+            if (token) {
+                headers["Authorization"] = `Bearer ${token}`;
+            }
+            const res = await fetch(`${baseUrl}/api/pendingMasjidsNearby?latitude=${lat}&longitude=${lng}&radiusInKm=10`, {
+                headers
+            });
             const data = await res.json();
             if (data && data.pendingItems) {
                 // Filter out items this user has already verified
@@ -277,31 +311,29 @@ export default function HomePage() {
                     return !verifiedReports.includes(item.id);
                 });
 
-                // --- Daily notification limit ---
-                // Max 4 per day normally, absolute max 6
-                const MAX_DAILY = 4;
-                const MAX_ABSOLUTE = 6;
-                const today = new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
-                const storedLimit = JSON.parse(localStorage.getItem('notification_daily_limit') || '{}');
+                // Apply daily limit only for standard community members, NOT for administrators reviewing masjids
+                if (!user?.isAdmin) {
+                    // --- Daily notification limit ---
+                    const MAX_DAILY = 4;
+                    const MAX_ABSOLUTE = 6;
+                    const today = new Date().toISOString().slice(0, 10);
+                    const storedLimit = JSON.parse(localStorage.getItem('notification_daily_limit') || '{}');
 
-                // Reset if it's a new day
-                if (storedLimit.date !== today) {
-                    localStorage.setItem('notification_daily_limit', JSON.stringify({ date: today, shown: 0 }));
+                    if (storedLimit.date !== today) {
+                        localStorage.setItem('notification_daily_limit', JSON.stringify({ date: today, shown: 0 }));
+                    }
+
+                    const dailyData = JSON.parse(localStorage.getItem('notification_daily_limit') || '{}');
+                    const alreadyShown = dailyData.shown || 0;
+                    const remaining = Math.max(0, MAX_DAILY - alreadyShown);
+                    const limit = Math.min(remaining, MAX_ABSOLUTE);
+                    filtered = filtered.slice(0, limit);
+
+                    localStorage.setItem('notification_daily_limit', JSON.stringify({
+                        date: today,
+                        shown: alreadyShown + filtered.length
+                    }));
                 }
-
-                const dailyData = JSON.parse(localStorage.getItem('notification_daily_limit') || '{}');
-                const alreadyShown = dailyData.shown || 0;
-                const remaining = Math.max(0, MAX_DAILY - alreadyShown);
-
-                // Apply both caps: daily remaining and absolute max
-                const limit = Math.min(remaining, MAX_ABSOLUTE);
-                filtered = filtered.slice(0, limit);
-
-                // Update count in localStorage
-                localStorage.setItem('notification_daily_limit', JSON.stringify({
-                    date: today,
-                    shown: alreadyShown + filtered.length
-                }));
 
                 setPendingMasjids(filtered);
             }
@@ -316,7 +348,8 @@ export default function HomePage() {
     };
 
     const fetchMasjids = async (dist) => {
-        if (!location.lat || !location.lng) return;
+        if (!location.lat || !location.lng || isFetchingRef.current) return;
+        isFetchingRef.current = true;
         setLoading(true);
         try {
             const baseUrl = API_BASE || window.location.origin;
@@ -370,6 +403,7 @@ export default function HomePage() {
             console.error("Error fetching masjids", err);
             setErrorMsg("Failed to load masjids");
         } finally {
+            isFetchingRef.current = false;
             setLoading(false);
         }
     };
@@ -542,8 +576,8 @@ export default function HomePage() {
                 {/* Row 1: Logo and Title */}
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 15 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                        <div style={{ width: 36, height: 36, background: "linear-gradient(135deg, #10B981, #059669)", borderRadius: "10px", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 8px rgba(16,185,129,0.3)" }}>
-                            <span style={{ color: "#fff", fontWeight: "bold", fontSize: 18 }}>M</span>
+                        <div style={{ width: 36, height: 36, borderRadius: "10px", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+                            <img src="/alwqt_image.png" alt="Al Waqt Logo" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                         </div>
                         <div style={{ display: "flex", flexDirection: "column" }}>
                             <h1 style={{ fontSize: 22, margin: 0, color: "#111827", fontWeight: "800", letterSpacing: "-0.5px", lineHeight: 1.2 }}>
@@ -557,21 +591,23 @@ export default function HomePage() {
 
                     {/* Notification Icon */}
                     <div style={{ position: "relative" }} ref={notificationRef}>
-                        <button
-                            onClick={() => setShowNotificationModal(!showNotificationModal)}
-                            style={{ background: "transparent", border: "none", cursor: "pointer", position: "relative", padding: "5px" }}
-                        >
-                            <IoNotificationsOutline size={26} color="#4B5563" />
-                            {pendingMasjids.length > 0 && (
-                                <div style={{
-                                    position: "absolute", top: 2, right: 2, backgroundColor: "#EF4444", color: "white",
-                                    borderRadius: "50%", fontSize: "10px", width: "16px", height: "16px",
-                                    display: "flex", alignItems: "center", justifyContent: "center", fontWeight: "bold", border: "2px solid #fff"
-                                }}>
-                                    {pendingMasjids.length}
-                                </div>
-                            )}
-                        </button>
+                        {user && (
+                            <button
+                                onClick={() => setShowNotificationModal(!showNotificationModal)}
+                                style={{ background: "transparent", border: "none", cursor: "pointer", position: "relative", padding: "5px" }}
+                            >
+                                <IoNotificationsOutline size={26} color="#4B5563" />
+                                {pendingMasjids.length > 0 && (
+                                    <div style={{
+                                        position: "absolute", top: 2, right: 2, backgroundColor: "#EF4444", color: "white",
+                                        borderRadius: "50%", fontSize: "10px", width: "16px", height: "16px",
+                                        display: "flex", alignItems: "center", justifyContent: "center", fontWeight: "bold", border: "2px solid #fff"
+                                    }}>
+                                        {pendingMasjids.length}
+                                    </div>
+                                )}
+                            </button>
+                        )}
 
                         {showNotificationModal && pendingMasjids.length > 0 && (
                             <div className="notification-dropdown" style={{
@@ -584,22 +620,29 @@ export default function HomePage() {
                                 {/* Header */}
                                 <div style={{
                                     padding: "18px 18px 14px", borderBottom: "1px solid #F3F4F6",
-                                    background: "linear-gradient(135deg, rgba(16,185,129,0.06) 0%, rgba(5,150,105,0.02) 100%)",
+                                    background: user?.isAdmin 
+                                        ? "linear-gradient(135deg, rgba(16,185,129,0.12) 0%, rgba(5,150,105,0.05) 100%)"
+                                        : "linear-gradient(135deg, rgba(16,185,129,0.06) 0%, rgba(5,150,105,0.02) 100%)",
                                     borderRadius: "16px 16px 0 0", position: "sticky", top: 0, zIndex: 1
                                 }}>
                                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
                                         <div style={{ width: 8, height: 8, borderRadius: "50%", background: "linear-gradient(135deg, #10B981, #059669)", flexShrink: 0 }} />
-                                        <h3 style={{ fontSize: "15px", fontWeight: "700", color: "#111827", margin: 0 }}>Help Verify Masjids</h3>
+                                        <h3 style={{ fontSize: "15px", fontWeight: "700", color: "#111827", margin: 0 }}>
+                                            {user?.isAdmin ? "Admin Verification Portal" : "Help Verify Masjids"}
+                                        </h3>
                                     </div>
                                     <p style={{ fontSize: "12px", color: "#6B7280", margin: 0, paddingLeft: 16 }}>
-                                        {pendingMasjids.length} item{pendingMasjids.length > 1 ? 's' : ''} near you need verification
+                                        {user?.isAdmin 
+                                            ? `${pendingMasjids.length} item${pendingMasjids.length > 1 ? 's' : ''} require your approval`
+                                            : `${pendingMasjids.length} item${pendingMasjids.length > 1 ? 's' : ''} near you need verification`}
                                     </p>
                                 </div>
 
                                 <div style={{ padding: "10px 12px", display: "flex", flexDirection: "column", gap: "10px" }}>
                                     {pendingMasjids.map(pm => {
                                         const itemKey = pm.type === 'new_masjid' ? pm.id : `report-${pm.id}`;
-                                        const typeBadge = pm.type === 'new_masjid' ? { label: '🆕 New', color: '#10B981', bg: '#ECFDF5' }
+                                        const isAdminItem = pm.isAdminReview || pm.type === 'new_masjid';
+                                        const typeBadge = isAdminItem ? { label: '🛡️ Admin Review', color: '#059669', bg: '#D1FAE5' }
                                             : pm.report_type === 'location_change' ? { label: '📍 Location', color: '#F59E0B', bg: '#FFFBEB' }
                                                 : { label: '❌ Missing', color: '#EF4444', bg: '#FEF2F2' };
 
@@ -608,18 +651,20 @@ export default function HomePage() {
                                                 key={itemKey}
                                                 onClick={() => handleNavigateToVerification(pm)}
                                                 style={{
-                                                    border: "1px solid #F3F4F6", borderRadius: "12px", padding: "14px",
-                                                    background: "#FAFAFA", cursor: "pointer", transition: "all 0.2s ease"
+                                                    border: isAdminItem ? "1.5px solid #A7F3D0" : "1px solid #F3F4F6", 
+                                                    borderRadius: "12px", padding: "14px",
+                                                    background: isAdminItem ? "#F0FDF4" : "#FAFAFA", 
+                                                    cursor: "pointer", transition: "all 0.2s ease"
                                                 }}
                                                 onMouseOver={(e) => {
                                                     e.currentTarget.style.borderColor = "#10B981";
-                                                    e.currentTarget.style.background = "#F0FDF4";
+                                                    e.currentTarget.style.background = "#DCFCE7";
                                                     e.currentTarget.style.transform = "translateY(-1px)";
-                                                    e.currentTarget.style.boxShadow = "0 4px 12px rgba(16,185,129,0.1)";
+                                                    e.currentTarget.style.boxShadow = "0 4px 12px rgba(16,185,129,0.15)";
                                                 }}
                                                 onMouseOut={(e) => {
-                                                    e.currentTarget.style.borderColor = "#F3F4F6";
-                                                    e.currentTarget.style.background = "#FAFAFA";
+                                                    e.currentTarget.style.borderColor = isAdminItem ? "#A7F3D0" : "#F3F4F6";
+                                                    e.currentTarget.style.background = isAdminItem ? "#F0FDF4" : "#FAFAFA";
                                                     e.currentTarget.style.transform = "translateY(0)";
                                                     e.currentTarget.style.boxShadow = "none";
                                                 }}
@@ -633,7 +678,7 @@ export default function HomePage() {
                                                     }}>{typeBadge.label}</span>
                                                 </div>
                                                 <p style={{ fontSize: "11px", color: "#6B7280", margin: "0 0 10px 0" }}>
-                                                    ~{pm.distance?.toFixed(1) || '?'} km away{pm.address ? ` · ${pm.address}` : ''}
+                                                    {pm.distance != null ? `~${pm.distance.toFixed(1)} km away` : 'Pending review'}{pm.address ? ` · ${pm.address}` : ''}
                                                 </p>
                                                 {pm.image_url && (
                                                     <img src={`${API_BASE}${pm.image_url}`} alt="Proof"
@@ -641,11 +686,11 @@ export default function HomePage() {
                                                 )}
                                                 <div style={{
                                                     width: "100%", padding: "8px", borderRadius: "8px",
-                                                    background: "linear-gradient(135deg, #EFF6FF, #F0F9FF)",
-                                                    color: "#2563EB", fontWeight: "600", fontSize: "12px",
-                                                    border: "1px solid #BFDBFE", textAlign: "center"
+                                                    background: isAdminItem ? "linear-gradient(135deg, #10B981, #059669)" : "linear-gradient(135deg, #EFF6FF, #F0F9FF)",
+                                                    color: isAdminItem ? "#ffffff" : "#2563EB", fontWeight: "600", fontSize: "12px",
+                                                    border: isAdminItem ? "none" : "1px solid #BFDBFE", textAlign: "center"
                                                 }}>
-                                                    Review & Verify →
+                                                    {isAdminItem ? "Review & Approve →" : "Review & Verify →"}
                                                 </div>
                                             </div>
                                         );

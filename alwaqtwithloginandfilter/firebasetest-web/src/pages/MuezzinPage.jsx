@@ -255,7 +255,7 @@ export default function MuezzinPage() {
 
     if (checkingExisting) {
         return (
-            <div style={{ backgroundColor: "#F3F4F6", minHeight: "100vh", display: "flex", justifyContent: "center", alignItems: "center" }}>
+            <div style={{ backgroundColor: "#F3F4F6", minHeight: "100vh", display: "flex", justifyContent: "center", alignItems: "center", paddingTop: "var(--safe-area-top, 0px)" }}>
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 15 }}>
                     <IoSync className="spin" size={40} color="#10B981" />
                     <p style={{ color: "#4B5563", fontWeight: "600", fontSize: 16 }}>Loading Dashboard...</p>
@@ -272,7 +272,7 @@ export default function MuezzinPage() {
         <div style={{ backgroundColor: "#F3F4F6", minHeight: "100vh", position: "relative" }}>
 
             {/* Header */}
-            <div style={{ backgroundColor: "#10B981", color: "#FFF", padding: "20px 20px 30px", borderBottomLeftRadius: 20, borderBottomRightRadius: 20 }}>
+            <div style={{ backgroundColor: "#10B981", color: "#FFF", padding: "calc(20px + var(--safe-area-top, 0px)) 20px 30px", borderBottomLeftRadius: 20, borderBottomRightRadius: 20 }}>
                 <h1 style={{ fontSize: 24, fontWeight: "bold", margin: "0 0 10px 0" }}>Claim Your Masjid</h1>
                 <p style={{ margin: 0, opacity: 0.9, fontSize: 14 }}>Find your mosque on the map below and register as an official Muazzin.</p>
             </div>

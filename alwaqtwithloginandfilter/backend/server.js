@@ -8,6 +8,9 @@ const pool = require('./db');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const admin = require('firebase-admin');
+const { z } = require('zod');
+const sharp = require('sharp');
 
 const app = express();
 
@@ -17,17 +20,61 @@ if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir);
 }
 
-// Configure multer storage
-const storage = multer.diskStorage({
-    destination: function (req, file, cb) {
-        cb(null, 'uploads/');
+// Initialize Firebase Admin SDK
+const firebaseProjectId = process.env.FIREBASE_PROJECT_ID || 'authusersforalwaqt';
+try {
+    const serviceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT;
+    if (serviceAccountPath) {
+        const serviceAccount = require(path.resolve(serviceAccountPath));
+        admin.initializeApp({
+            credential: admin.credential.cert(serviceAccount)
+        });
+        console.log('✅ Firebase Admin SDK initialized with Service Account file');
+    } else if (process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
+        admin.initializeApp({
+            credential: admin.credential.cert({
+                projectId: firebaseProjectId,
+                clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+                privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+            })
+        });
+        console.log('✅ Firebase Admin SDK initialized with inline Env Credentials');
+    } else {
+        admin.initializeApp({
+            projectId: firebaseProjectId
+        });
+        console.log('✅ Firebase Admin SDK initialized with Project ID fallback');
+    }
+} catch (error) {
+    console.error('⚠️ Firebase Admin SDK initialization failed:', error.message);
+}
+
+// Ensure users table has is_admin column on startup
+(async () => {
+    try {
+        await pool.execute("ALTER TABLE users ADD COLUMN is_admin TINYINT(1) DEFAULT 0");
+        console.log("✅ Auto-migration: is_admin column verified on users table");
+    } catch (e) {
+        // Column already exists or table will be initialized via setup endpoint
+    }
+})();
+
+// Configure multer storage in memory (buffer processing via sharp)
+const storage = multer.memoryStorage();
+const upload = multer({
+    storage: storage,
+    limits: {
+        fileSize: 5 * 1024 * 1024, // 5MB limit
     },
-    filename: function (req, file, cb) {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, 'verification-' + uniqueSuffix + path.extname(file.originalname));
+    fileFilter: function (req, file, cb) {
+        const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+        if (allowedTypes.includes(file.mimetype)) {
+            cb(null, true);
+        } else {
+            cb(new Error('Only JPEG, PNG, and WebP images are allowed'));
+        }
     }
 });
-const upload = multer({ storage: storage });
 
 // Trust proxy for rate limiting behind NGINX/Load Balancer (Hostinger)
 app.set('trust proxy', true);
@@ -56,18 +103,208 @@ const corsOptions = allowedOrigins.includes('*')
 
 app.use(cors(corsOptions));
 
-app.use(express.json({ limit: '10mb' }));
+// Tightened Payload Limit - max 1MB for JSON standard API routes
+app.use(express.json({ limit: '1mb' }));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
+// Global rate limiter (accommodates mobile CGNAT and shared WiFi networks)
 const limiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 200,
+    windowMs: 1 * 60 * 1000, // 1 minute
+    max: 600,                // 600 requests per minute
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: 'Too many requests, please try again later.' },
     validate: false,
 });
 app.use(limiter);
+
+// Strict rate limiter for sensitive authentication / verification routes
+const authLimiter = rateLimit({
+    windowMs: 1 * 60 * 1000, // 1 minute
+    max: 10,                 // max 10 requests per minute
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many auth or verification attempts, please try again later.' },
+    validate: false,
+});
+
+// ============================================
+// Authentication & BOLA Authorization Middlewares
+// ============================================
+const authenticateUser = async (req, res, next) => {
+    try {
+        const authHeader = req.headers.authorization;
+        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+            return res.status(401).json({ error: 'Authentication required. Please provide a Bearer token.' });
+        }
+
+        const idToken = authHeader.split('Bearer ')[1];
+        
+        // Verify token with Firebase Admin
+        const decodedToken = await admin.auth().verifyIdToken(idToken);
+        const firebaseUid = decodedToken.uid;
+
+        // Find the user in our DB using the verified firebase_uid
+        const [userRows] = await pool.execute(
+            'SELECT * FROM users WHERE firebase_uid = ?',
+            [firebaseUid]
+        );
+
+        if (userRows.length === 0) {
+            // Auto-register user in DB if they are verified by Firebase but missing locally
+            const [result] = await pool.execute(
+                'INSERT INTO users (firebase_uid, name, email) VALUES (?, ?, ?)',
+                [firebaseUid, decodedToken.name || '', decodedToken.email || '']
+            );
+            const [newUser] = await pool.execute(
+                'SELECT * FROM users WHERE id = ?',
+                [result.insertId]
+            );
+            req.user = newUser[0];
+        } else {
+            req.user = userRows[0];
+        }
+
+        next();
+    } catch (error) {
+        console.error('Authentication error:', error.message);
+        return res.status(401).json({ error: 'Unauthorized', details: error.message });
+    }
+};
+
+// Optional user authentication: if a Bearer token is provided, verify it and attach req.user.
+// Never blocks requests so community updates, muazzins, and mobile users can update seamlessly.
+const optionalAuthenticateUser = async (req, res, next) => {
+    try {
+        const authHeader = req.headers.authorization;
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+            const idToken = authHeader.split('Bearer ')[1];
+            try {
+                const decodedToken = await admin.auth().verifyIdToken(idToken);
+                const firebaseUid = decodedToken.uid;
+                const [userRows] = await pool.execute(
+                    'SELECT * FROM users WHERE firebase_uid = ?',
+                    [firebaseUid]
+                );
+                if (userRows.length > 0) {
+                    req.user = userRows[0];
+                }
+            } catch (tokenErr) {
+                console.warn('Optional auth token note:', tokenErr.message);
+            }
+        }
+    } catch (err) {
+        console.warn('optionalAuthenticateUser note:', err.message);
+    }
+    next();
+};
+
+const authorizeMasjidManager = async (req, res, next) => {
+    try {
+        const { masjidId } = req.body;
+        if (!masjidId) {
+            return res.status(400).json({ error: 'Missing masjidId' });
+        }
+
+        const userId = req.user.id;
+        const userEmail = req.user.email;
+        const userPhone = req.user.mobile_number;
+
+        // 1. Fetch masjid's creator_id
+        const [masjidRows] = await pool.execute(
+            'SELECT creator_id FROM masjids WHERE id = ?',
+            [masjidId]
+        );
+
+        if (masjidRows.length === 0) {
+            return res.status(404).json({ error: 'Masjid not found' });
+        }
+
+        const creatorId = masjidRows[0].creator_id;
+
+        // If user is the creator, allow it
+        if (creatorId && creatorId === userId) {
+            return next();
+        }
+
+        // 2. Check if user is the assigned muazzin for this masjid (by email or phone)
+        const [muazzinRows] = await pool.execute(
+            'SELECT id FROM muazzins WHERE masjid_id = ? AND (email = ? OR phone = ?)',
+            [masjidId, userEmail || '', userPhone || '']
+        );
+
+        if (muazzinRows.length > 0) {
+            return next();
+        }
+
+        // Neither creator nor assigned muazzin
+        return res.status(403).json({ error: 'Forbidden: You do not have permission to manage this masjid.' });
+    } catch (error) {
+        console.error('Authorization check error:', error);
+        return res.status(500).json({ error: 'Internal server error during authorization check' });
+    }
+};
+
+// ============================================
+// Input Validation Helper Middlewares & Zod Schemas
+// ============================================
+const validateBody = (schema) => (req, res, next) => {
+    try {
+        req.body = schema.parse(req.body);
+        next();
+    } catch (error) {
+        next(error); // forward to global error handler
+    }
+};
+
+const validateQuery = (schema) => (req, res, next) => {
+    try {
+        req.query = schema.parse(req.query);
+        next();
+    } catch (error) {
+        next(error); // forward to global error handler
+    }
+};
+
+const searchSchema = z.object({
+    latitude: z.preprocess((val) => parseFloat(val), z.number().min(-90).max(90)),
+    longitude: z.preprocess((val) => parseFloat(val), z.number().min(-180).max(180)),
+    radiusInKm: z.preprocess((val) => val ? parseFloat(val) : 3, z.number().positive().max(20).optional().default(3)),
+});
+
+const addMasjidSchema = z.object({
+    latitude: z.number().min(-90).max(90),
+    longitude: z.number().min(-180).max(180),
+    countryName: z.string().optional().nullable(),
+    stateName: z.string().optional().nullable(),
+    cityName: z.string().optional().nullable(),
+    contactNumber: z.string().optional().nullable(),
+    source: z.string().optional().nullable(),
+    olaPlaceId: z.string().optional().nullable(),
+    imageUrl: z.string().optional().nullable(),
+    details: z.object({
+        name: z.string().min(1, 'Masjid name is required'),
+        addressLine1: z.string().optional().nullable(),
+        timings: z.object({
+            fajr: z.string().optional().nullable(),
+            dhuhr: z.string().optional().nullable(),
+            asar: z.string().optional().nullable(),
+            maghrib: z.string().optional().nullable(),
+            isha: z.string().optional().nullable(),
+            jummatiming: z.union([z.string(), z.array(z.string())]).optional().nullable(),
+            taraweeh: z.union([z.any(), z.array(z.any())]).optional().nullable(),
+            events: z.array(z.any()).optional().nullable(),
+        }).optional(),
+    }),
+});
+
+const muazzinRegisterSchema = z.object({
+    masjidId: z.preprocess((val) => parseInt(val, 10), z.number().int().positive()),
+    name: z.string().min(1, 'Name is required'),
+    email: z.string().email('Invalid email address'),
+    phone: z.string().min(5, 'Invalid phone number'),
+    address: z.string().min(1, 'Address is required'),
+});
 
 // ============================================
 // Helper: Build masjid response object from DB rows
@@ -146,11 +383,33 @@ function haversineDistance(lat1, lon1, lat2, lon2) {
 }
 
 // ============================================
+// OLA Maps In-Memory Cache & Upstream Rate-Limit Protection
+// ============================================
+const olaSearchCache = new Map();       // Key: 'lat2_lng2_radius' -> timestamp
+const olaReverseCache = new Map();      // Key: 'lat3_lng3' -> { address, timestamp }
+const olaAutocompleteCache = new Map(); // Key: 'input_lat_lng' -> { data, timestamp }
+let olaCooldownUntil = 0;               // Cooldown timestamp if Ola returns 429
+
+// Periodic cleanup of expired cache entries every 15 minutes
+setInterval(() => {
+    const now = Date.now();
+    for (const [key, timestamp] of olaSearchCache.entries()) {
+        if (now - timestamp > 15 * 60 * 1000) olaSearchCache.delete(key);
+    }
+    for (const [key, item] of olaReverseCache.entries()) {
+        if (now - item.timestamp > 30 * 60 * 1000) olaReverseCache.delete(key);
+    }
+    for (const [key, item] of olaAutocompleteCache.entries()) {
+        if (now - item.timestamp > 15 * 60 * 1000) olaAutocompleteCache.delete(key);
+    }
+}, 15 * 60 * 1000);
+
+// ============================================
 // Routes
 // ============================================
 
 // -----------------------------------------------------------------
-// GET /autocomplete: Proxy for OLA Maps Autocomplete API
+// GET /autocomplete: Proxy for OLA Maps Autocomplete API (Cached)
 // -----------------------------------------------------------------
 app.get('/api/autocomplete', async (req, res) => {
     try {
@@ -159,9 +418,21 @@ app.get('/api/autocomplete', async (req, res) => {
             return res.status(400).json({ error: 'Input is required' });
         }
 
+        const cleanInput = input.toLowerCase().trim();
+        const cacheKey = `${cleanInput}_${lat ? parseFloat(lat).toFixed(2) : ''}_${lng ? parseFloat(lng).toFixed(2) : ''}`;
+        const cached = olaAutocompleteCache.get(cacheKey);
+        if (cached && (Date.now() - cached.timestamp < 10 * 60 * 1000)) {
+            return res.json(cached.data);
+        }
+
         const olaApiKey = process.env.OLA_API_KEY;
         if (!olaApiKey) {
             return res.status(500).json({ error: 'OLA API key not configured' });
+        }
+
+        // If currently in cooldown due to previous 429, return empty predictions gracefully
+        if (Date.now() < olaCooldownUntil) {
+            return res.json({ predictions: [] });
         }
 
         // Build the URL based on provided coordinates
@@ -171,7 +442,15 @@ app.get('/api/autocomplete', async (req, res) => {
         }
 
         const olaRes = await fetch(url, { headers: { 'X-Request-Id': 'ALWAQT-BACKEND' } });
+
+        if (olaRes.status === 429) {
+            console.warn('⚠️ OLA Autocomplete 429 (Rate limit reached). Cooldown active for 60s.');
+            olaCooldownUntil = Date.now() + 60 * 1000;
+            return res.json({ predictions: [] });
+        }
+
         const data = await olaRes.json();
+        olaAutocompleteCache.set(cacheKey, { data, timestamp: Date.now() });
 
         return res.json(data);
     } catch (err) {
@@ -181,7 +460,7 @@ app.get('/api/autocomplete', async (req, res) => {
 });
 
 // -----------------------------------------------------------------
-// GET /reverseGeocode: Fetch address from OLA Reverse Geocoding API
+// GET /reverseGeocode: Fetch address from OLA Reverse Geocoding API (Cached)
 // -----------------------------------------------------------------
 app.get('/api/reverseGeocode', async (req, res) => {
     try {
@@ -190,17 +469,36 @@ app.get('/api/reverseGeocode', async (req, res) => {
             return res.status(400).json({ error: 'Latitude and longitude are required' });
         }
 
+        // Cache resolution: 3 decimal places (~100m) with 30 minute TTL
+        const cacheKey = `${parseFloat(lat).toFixed(3)}_${parseFloat(lng).toFixed(3)}`;
+        const cached = olaReverseCache.get(cacheKey);
+        if (cached && (Date.now() - cached.timestamp < 30 * 60 * 1000)) {
+            return res.json({ address: cached.address });
+        }
+
         const olaApiKey = process.env.OLA_API_KEY;
         if (!olaApiKey) {
             return res.status(500).json({ error: 'OLA API key not configured' });
         }
 
+        if (Date.now() < olaCooldownUntil) {
+            return res.json({ address: 'Selected Location' });
+        }
+
         const url = `https://api.olamaps.io/places/v1/reverse-geocode?latlng=${lat},${lng}&api_key=${olaApiKey}`;
         const olaRes = await fetch(url, { headers: { 'X-Request-Id': 'ALWAQT-BACKEND' } });
+
+        if (olaRes.status === 429) {
+            console.warn('⚠️ OLA Reverse Geocode 429 (Rate limit reached). Cooldown active for 60s.');
+            olaCooldownUntil = Date.now() + 60 * 1000;
+            return res.json({ address: 'Selected Location' });
+        }
+
         const data = await olaRes.json();
 
         if (data && data.results && data.results.length > 0) {
             const address = data.results[0].formatted_address;
+            olaReverseCache.set(cacheKey, { address, timestamp: Date.now() });
             return res.json({ address });
         } else {
             return res.status(404).json({ error: 'Address not found' });
@@ -212,9 +510,34 @@ app.get('/api/reverseGeocode', async (req, res) => {
 });
 
 // -----------------------------------------------------------------
+// GET /api/debug-ip: Check client IP resolution & proxy headers
+// -----------------------------------------------------------------
+app.get('/api/debug-ip', (req, res) => {
+    res.json({
+        expressClientIp: req.ip,
+        xForwardedFor: req.headers['x-forwarded-for'] || null,
+        xRealIp: req.headers['x-real-ip'] || null,
+        cfConnectingIp: req.headers['cf-connecting-ip'] || null,
+        remoteAddress: req.socket.remoteAddress,
+        isLoopback: req.ip === '127.0.0.1' || req.ip === '::1' || req.ip === '::ffff:127.0.0.1'
+    });
+});
+
+// -----------------------------------------------------------------
 // GET /api/setup-database: Auto-create all tables for fresh deployment
 // -----------------------------------------------------------------
-app.get('/api/setup-database', async (req, res) => {
+app.get('/api/setup-database', (req, res, next) => {
+    const token = req.headers['x-admin-token'] || req.query.token;
+    const expectedToken = process.env.ADMIN_SETUP_TOKEN;
+    if (!expectedToken) {
+        console.warn('⚠️ Warning: ADMIN_SETUP_TOKEN is not defined in environment variables. Database setup endpoint is locked.');
+        return res.status(403).json({ error: 'Forbidden: Database setup is disabled (missing ADMIN_SETUP_TOKEN).' });
+    }
+    if (token !== expectedToken) {
+        return res.status(403).json({ error: 'Forbidden: Invalid setup token' });
+    }
+    next();
+}, async (req, res) => {
     try {
         console.log('Starting Al Waqt database setup...');
 
@@ -227,6 +550,7 @@ app.get('/api/setup-database', async (req, res) => {
                 email VARCHAR(255),
                 mobile_number VARCHAR(20) DEFAULT NULL,
                 user_type ENUM('Muazzin', 'Not Muazzin') DEFAULT NULL,
+                is_admin TINYINT(1) DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 INDEX idx_firebase_uid (firebase_uid),
@@ -255,9 +579,11 @@ app.get('/api/setup-database', async (req, res) => {
                 ola_latitude DECIMAL(10, 8) DEFAULT NULL,
                 ola_longitude DECIMAL(11, 8) DEFAULT NULL,
                 timings_image_url VARCHAR(255) DEFAULT NULL,
+                creator_id INT DEFAULT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                INDEX idx_location (latitude, longitude)
+                INDEX idx_location (latitude, longitude),
+                FOREIGN KEY (creator_id) REFERENCES users(id) ON DELETE SET NULL
             ) ENGINE=InnoDB
         `);
         console.log('✅ masjids table ready');
@@ -439,6 +765,7 @@ app.get('/api/setup-database', async (req, res) => {
         console.log('✅ announcements table ready');
 
         // ===== AUTO MIGRATIONS (add missing columns for older DBs) =====
+        try { await pool.execute("ALTER TABLE users ADD COLUMN is_admin TINYINT(1) DEFAULT 0"); } catch (e) { /* exists */ }
         try { await pool.execute("ALTER TABLE masjids ADD COLUMN contact_number VARCHAR(20) DEFAULT NULL"); } catch (e) { /* exists */ }
         try { await pool.execute("ALTER TABLE masjids ADD COLUMN status ENUM('pending', 'approved', 'rejected') DEFAULT 'approved'"); } catch (e) { /* exists */ }
         try { await pool.execute("ALTER TABLE masjids MODIFY COLUMN status ENUM('pending', 'approved', 'rejected', 'hidden') DEFAULT 'approved'"); } catch (e) { /* exists */ }
@@ -453,16 +780,6 @@ app.get('/api/setup-database', async (req, res) => {
         try { await pool.execute("ALTER TABLE masjid_reports ADD COLUMN original_lat DECIMAL(10, 8) DEFAULT NULL"); } catch (e) { /* exists */ }
         try { await pool.execute("ALTER TABLE masjid_reports ADD COLUMN original_lng DECIMAL(11, 8) DEFAULT NULL"); } catch (e) { /* exists */ }
         try { await pool.execute("ALTER TABLE masjids ADD COLUMN timings_image_url VARCHAR(255) DEFAULT NULL"); } catch (e) { /* exists */ }
-
-        // Update existing Ola masjids to be unverified if they haven't been manually verified yet
-        // A simple heuristic: if they were imported from Ola, we assume they need verification. 
-        // Note: we don't have a way to know if they WERE verified in the past (before is_verified was added),
-        // but it's safer to require verification again if they update.
-        try {
-            await pool.execute("UPDATE masjids SET is_verified = 0 WHERE source = 'ola' AND is_verified = 1");
-        } catch (e) {
-            console.error("Migration warning (is_verified update):", e.message);
-        }
 
         console.log('✅ All migrations applied');
         console.log('🕌 Al Waqt database setup completed successfully!');
@@ -533,7 +850,7 @@ app.get('/api/settings', async (req, res) => {
 // POST /signupwithmobile
 // Register or fetch user by Firebase UID
 // ------------------------------------------
-app.post('/signupwithmobile', async (req, res) => {
+app.post('/signupwithmobile', authLimiter, async (req, res) => {
     try {
         const { orderId } = req.body;
         if (!orderId || !orderId.uid) {
@@ -579,10 +896,35 @@ app.post('/signupwithmobile', async (req, res) => {
                 email: user.email,
                 mobileNumber: user.mobile_number || '',
                 userType: user.user_type || '',
+                isAdmin: user.is_admin === 1,
             },
         });
     } catch (error) {
         console.error('signupwithmobile error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// ------------------------------------------
+// GET /api/user/me
+// Get authenticated user details & admin status
+// ------------------------------------------
+app.get('/api/user/me', authenticateUser, async (req, res) => {
+    try {
+        const user = req.user;
+        res.json({
+            userdata: {
+                userid: user.id,
+                id: user.firebase_uid,
+                name: user.name,
+                email: user.email,
+                mobileNumber: user.mobile_number || '',
+                userType: user.user_type || '',
+                isAdmin: user.is_admin === 1,
+            }
+        });
+    } catch (error) {
+        console.error('user/me error:', error);
         res.status(500).json({ error: 'Internal server error' });
     }
 });
@@ -728,48 +1070,32 @@ app.get('/getNearestMasjid', async (req, res) => {
 
 // ------------------------------------------
 // GET /api/pendingMasjidsNearby
-// Fetch pending masjids AND pending reports within a radius (default 10km)
+// Fetch pending items: Pending new masjids are returned ONLY to administrators.
 // ------------------------------------------
-app.get('/api/pendingMasjidsNearby', async (req, res) => {
+app.get('/api/pendingMasjidsNearby', optionalAuthenticateUser, async (req, res) => {
     try {
         const { latitude, longitude, radiusInKm } = req.query;
-        if (!latitude || !longitude) {
-            return res.status(400).json({ error: 'Missing latitude or longitude' });
-        }
-
-        const lat = parseFloat(latitude);
-        const lng = parseFloat(longitude);
+        const lat = latitude ? parseFloat(latitude) : null;
+        const lng = longitude ? parseFloat(longitude) : null;
         const radius = parseFloat(radiusInKm) || 10; // Unified 10km radius
 
-        const latDelta = radius / 111;
-        const lngDelta = radius / (111 * Math.cos((lat * Math.PI) / 180));
-
-        // 1. Fetch pending new masjids
-        const [masjidRows] = await pool.execute(
-            `SELECT * FROM masjids 
-             WHERE latitude BETWEEN ? AND ? 
-             AND longitude BETWEEN ? AND ?
-             AND status = 'pending'`,
-            [lat - latDelta, lat + latDelta, lng - lngDelta, lng + lngDelta]
-        );
-
-        // 2. Fetch pending reports for approved masjids
-        const [reportRows] = await pool.execute(
-            `SELECT r.*, m.name as masjid_name, m.latitude as m_lat, m.longitude as m_lng, m.address_line1
-             FROM masjid_reports r
-             JOIN masjids m ON r.masjid_id = m.id
-             WHERE m.latitude BETWEEN ? AND ?
-             AND m.longitude BETWEEN ? AND ?
-             AND r.status = 'pending'`,
-            [lat - latDelta, lat + latDelta, lng - lngDelta, lng + lngDelta]
-        );
-
         const pendingItems = [];
+        const isAdmin = !!(req.user && req.user.is_admin === 1);
 
-        // Add pending masjids
-        for (const row of masjidRows) {
-            const dist = haversineDistance(lat, lng, parseFloat(row.latitude), parseFloat(row.longitude));
-            if (dist <= radius) {
+        // 1. Pending new masjids -> ONLY visible to verified database admins
+        if (isAdmin) {
+            const [masjidRows] = await pool.execute(
+                `SELECT id, name, latitude, longitude, address_line1, image_url, status, created_at 
+                 FROM masjids 
+                 WHERE status = 'pending' 
+                 ORDER BY created_at DESC 
+                 LIMIT 50`
+            );
+
+            for (const row of masjidRows) {
+                const dist = (lat !== null && lng !== null)
+                    ? haversineDistance(lat, lng, parseFloat(row.latitude), parseFloat(row.longitude))
+                    : null;
                 pendingItems.push({
                     type: 'new_masjid',
                     id: row.id,
@@ -779,28 +1105,45 @@ app.get('/api/pendingMasjidsNearby', async (req, res) => {
                     latitude: row.latitude,
                     longitude: row.longitude,
                     image_url: row.image_url || null,
+                    status: row.status,
+                    isAdminReview: true
                 });
             }
         }
 
-        // Add pending reports
-        for (const row of reportRows) {
-            const dist = haversineDistance(lat, lng, parseFloat(row.m_lat), parseFloat(row.m_lng));
-            if (dist <= radius) {
-                pendingItems.push({
-                    type: 'report',
-                    report_type: row.report_type,
-                    id: row.id,
-                    masjid_id: row.masjid_id,
-                    name: row.masjid_name,
-                    distance: dist,
-                    address: row.address_line1 || '',
-                    original_lat: row.m_lat,
-                    original_lng: row.m_lng,
-                    new_lat: row.new_lat,
-                    new_lng: row.new_lng,
-                    image_url: row.image_url
-                });
+        // 2. Fetch pending reports for approved masjids within radius (if lat/lng provided)
+        if (lat !== null && lng !== null) {
+            const latDelta = radius / 111;
+            const lngDelta = radius / (111 * Math.cos((lat * Math.PI) / 180));
+
+            const [reportRows] = await pool.execute(
+                `SELECT r.*, m.name as masjid_name, m.latitude as m_lat, m.longitude as m_lng, m.address_line1
+                 FROM masjid_reports r
+                 JOIN masjids m ON r.masjid_id = m.id
+                 WHERE m.latitude BETWEEN ? AND ?
+                 AND m.longitude BETWEEN ? AND ?
+                 AND r.status = 'pending'`,
+                [lat - latDelta, lat + latDelta, lng - lngDelta, lng + lngDelta]
+            );
+
+            for (const row of reportRows) {
+                const dist = haversineDistance(lat, lng, parseFloat(row.m_lat), parseFloat(row.m_lng));
+                if (dist <= radius) {
+                    pendingItems.push({
+                        type: 'report',
+                        report_type: row.report_type,
+                        id: row.id,
+                        masjid_id: row.masjid_id,
+                        name: row.masjid_name,
+                        distance: dist,
+                        address: row.address_line1 || '',
+                        original_lat: row.m_lat,
+                        original_lng: row.m_lng,
+                        new_lat: row.new_lat,
+                        new_lng: row.new_lng,
+                        image_url: row.image_url
+                    });
+                }
             }
         }
 
@@ -812,10 +1155,72 @@ app.get('/api/pendingMasjidsNearby', async (req, res) => {
 });
 
 // ------------------------------------------
+// POST /api/admin/approveMasjid
+// Admin only: Approve a pending masjid and make it live
+// ------------------------------------------
+app.post('/api/admin/approveMasjid', authenticateUser, async (req, res) => {
+    try {
+        if (!req.user || req.user.is_admin !== 1) {
+            return res.status(403).json({ error: 'Forbidden: Admin access required.' });
+        }
+
+        const { masjidId } = req.body;
+        if (!masjidId) {
+            return res.status(400).json({ error: 'Missing masjidId' });
+        }
+
+        const [result] = await pool.execute(
+            "UPDATE masjids SET status = 'approved', is_verified = 1 WHERE id = ?",
+            [masjidId]
+        );
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ error: 'Masjid not found' });
+        }
+
+        res.json({ success: true, message: 'Masjid approved successfully and is now live!' });
+    } catch (error) {
+        console.error('admin approveMasjid error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// ------------------------------------------
+// POST /api/admin/rejectMasjid
+// Admin only: Reject a pending masjid
+// ------------------------------------------
+app.post('/api/admin/rejectMasjid', authenticateUser, async (req, res) => {
+    try {
+        if (!req.user || req.user.is_admin !== 1) {
+            return res.status(403).json({ error: 'Forbidden: Admin access required.' });
+        }
+
+        const { masjidId } = req.body;
+        if (!masjidId) {
+            return res.status(400).json({ error: 'Missing masjidId' });
+        }
+
+        const [result] = await pool.execute(
+            "UPDATE masjids SET status = 'rejected' WHERE id = ?",
+            [masjidId]
+        );
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ error: 'Masjid not found' });
+        }
+
+        res.json({ success: true, message: 'Masjid rejected successfully' });
+    } catch (error) {
+        console.error('admin rejectMasjid error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// ------------------------------------------
 // POST /api/verifyMasjid
 // Submit a community verification for a pending masjid
 // ------------------------------------------
-app.post('/api/verifyMasjid', async (req, res) => {
+app.post('/api/verifyMasjid', authLimiter, async (req, res) => {
     try {
         const { masjidId, verifierPhone } = req.body;
         if (!masjidId || !verifierPhone) {
@@ -838,7 +1243,7 @@ app.post('/api/verifyMasjid', async (req, res) => {
 // POST /api/verifyReport
 // Submit a community verification for a pending report
 // ------------------------------------------
-app.post('/api/verifyReport', async (req, res) => {
+app.post('/api/verifyReport', authLimiter, async (req, res) => {
     try {
         const { reportId, verifierPhone } = req.body;
         if (!reportId || !verifierPhone) {
@@ -861,15 +1266,26 @@ app.post('/api/verifyReport', async (req, res) => {
 // POST /api/uploadImage
 // Upload an image for verification and return the path
 // ------------------------------------------
-app.post('/api/uploadImage', upload.single('image'), (req, res) => {
+app.post('/api/uploadImage', upload.single('image'), async (req, res) => {
     try {
         if (!req.file) {
             return res.status(400).json({ error: 'No image uploaded' });
         }
-        res.json({ imageUrl: `/uploads/${req.file.filename}` });
+
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        const filename = 'verification-' + uniqueSuffix + '.webp';
+        const outputPath = path.join(__dirname, 'uploads', filename);
+
+        // Sanitize: re-encode to clean WebP, stripping EXIF/metadata and limiting dimensions
+        await sharp(req.file.buffer)
+            .resize({ width: 1200, height: 1200, fit: 'inside', withoutEnlargement: true })
+            .webp({ quality: 80 })
+            .toFile(outputPath);
+
+        res.json({ imageUrl: `/uploads/${filename}` });
     } catch (error) {
         console.error('uploadImage error:', error);
-        res.status(500).json({ error: 'Internal server error while uploading image' });
+        res.status(500).json({ error: 'Error processing and saving image' });
     }
 });
 
@@ -916,38 +1332,21 @@ app.post('/api/reportMasjid', async (req, res) => {
 // POST /addMasjid
 // Add a new masjid with timings
 // ------------------------------------------
-app.post('/addMasjid', async (req, res) => {
+app.post('/addMasjid', authenticateUser, validateBody(addMasjidSchema), async (req, res) => {
     try {
-        const { latitude, longitude, countryName, stateName, cityName, contactNumber, details, source, olaPlaceId, imageUrl, userId } = req.body;
-
-        // ===== AUTH CHECK: Require a valid logged-in user =====
-        if (!userId) {
-            return res.status(401).json({ error: 'Authentication required. Please sign in to add a masjid.' });
-        }
-        const [authRows] = await pool.execute('SELECT id FROM users WHERE id = ?', [userId]);
-        if (authRows.length === 0) {
-            return res.status(401).json({ error: 'Invalid user. Please sign in again.' });
-        }
-        // ===== END AUTH CHECK =====
-
-        if (!latitude || !longitude) {
-            return res.status(400).json({ error: 'Missing latitude or longitude' });
-        }
-        if (!details || !details.name) {
-            return res.status(400).json({ error: 'Missing masjid name' });
-        }
+        const { latitude, longitude, countryName, stateName, cityName, contactNumber, details, source, olaPlaceId, imageUrl } = req.body;
 
         const connection = await pool.getConnection();
         try {
             await connection.beginTransaction();
 
-            // Insert masjid
-            const statusVal = source === 'ola' ? 'approved' : 'pending';
+            // Insert masjid — pending admin review before appearing on the map
+            const statusVal = 'pending';
             const sourceVal = source === 'ola' ? 'ola' : 'user';
 
             const [masjidResult] = await connection.execute(
-                `INSERT INTO masjids (name, latitude, longitude, address_line1, country_name, state_name, city_name, contact_number, status, source, ola_place_id, image_url, is_verified, ola_latitude, ola_longitude)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                `INSERT INTO masjids (name, latitude, longitude, address_line1, country_name, state_name, city_name, contact_number, status, source, ola_place_id, image_url, is_verified, ola_latitude, ola_longitude, creator_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                 [
                     details.name,
                     latitude,
@@ -961,9 +1360,10 @@ app.post('/addMasjid', async (req, res) => {
                     sourceVal,
                     olaPlaceId || null,
                     imageUrl || null,
-                    source === 'ola' ? 0 : 1, // 0 if imported directly from ola, else 1
+                    0, // 0 unverified until approved by admin
                     source === 'ola' ? latitude : null,
-                    source === 'ola' ? longitude : null
+                    source === 'ola' ? longitude : null,
+                    req.user.id
                 ]
             );
 
@@ -1047,19 +1447,9 @@ app.post('/addMasjid', async (req, res) => {
 // PUT /updateMasjid
 // Update masjid timings
 // ------------------------------------------
-app.put('/updateMasjid', async (req, res) => {
+app.put('/updateMasjid', optionalAuthenticateUser, async (req, res) => {
     try {
-        const { masjidId, updates, userId } = req.body;
-
-        // ===== AUTH CHECK: Require a valid logged-in user =====
-        if (!userId) {
-            return res.status(401).json({ error: 'Authentication required. Please sign in to update masjid details.' });
-        }
-        const [authRows] = await pool.execute('SELECT id FROM users WHERE id = ?', [userId]);
-        if (authRows.length === 0) {
-            return res.status(401).json({ error: 'Invalid user. Please sign in again.' });
-        }
-        // ===== END AUTH CHECK =====
+        const { masjidId, updates } = req.body;
 
         if (!masjidId) {
             return res.status(400).json({ error: 'Missing masjidId' });
@@ -1253,27 +1643,25 @@ app.put('/updateMasjid', async (req, res) => {
             }
 
             // --- History Tracking ---
-            const { updater } = req.body; // { id, name, type: 'Muazzin'|'Follower'|'User'|'Unknown' }
-            let changedByName = 'Unknown Person';
-            let changeType = 'Unknown';
-            let internalUserId = null;
+            const { updater } = req.body;
+            let changedByName = req.user?.name || 'Unknown Person';
+            let changeType = req.user?.user_type || 'User';
+            let internalUserId = req.user?.id || null;
 
             if (updater) {
-                changedByName = updater.name || 'Unknown Person';
-                changeType = updater.type || 'Unknown';
-
-                if (updater.id) {
-                    const [userRows] = await connection.execute(
-                        'SELECT id FROM users WHERE id = ? OR firebase_uid = ?',
-                        [isNaN(updater.id) ? 0 : updater.id, String(updater.id)]
-                    );
-                    if (userRows && userRows.length > 0) {
-                        internalUserId = userRows[0].id;
-                    }
-                }
+                if (updater.name) changedByName = updater.name;
+                if (updater.type) changeType = updater.type;
+                else if (updater.role) changeType = updater.role;
             }
 
-            const changeSummary = "Updated masjid details and timings"; // Simplified for now
+            // Ensure changeType matches MySQL ENUM('Muazzin', 'Follower', 'User', 'Unknown')
+            const normalizedType = String(changeType).toLowerCase();
+            if (normalizedType === 'muazzin') changeType = 'Muazzin';
+            else if (normalizedType === 'follower') changeType = 'Follower';
+            else if (normalizedType === 'user') changeType = 'User';
+            else changeType = 'Unknown';
+
+            const changeSummary = "Updated masjid details and timings";
 
             await connection.execute(
                 'INSERT INTO masjid_changes (masjid_id, user_id, changed_by_name, change_type, change_summary) VALUES (?, ?, ?, ?, ?)',
@@ -1414,25 +1802,23 @@ app.post('/getFavoriteMasjids', async (req, res) => {
 // GET /searchMasjidsWithOla
 // Fetch from DB + OLA nearby API, deduplicate, auto-import
 // ------------------------------------------
-app.get('/searchMasjidsWithOla', async (req, res) => {
+app.get('/searchMasjidsWithOla', validateQuery(searchSchema), async (req, res) => {
     try {
         const { latitude, longitude, radiusInKm } = req.query;
-        if (!latitude || !longitude) {
-            return res.status(400).json({ error: 'Missing latitude or longitude' });
-        }
-
-        const lat = parseFloat(latitude);
-        const lng = parseFloat(longitude);
-        const radius = parseFloat(radiusInKm) || 3; // default 3km
+        const lat = latitude;
+        const lng = longitude;
+        const radius = radiusInKm; // Already capped at 20km max by Zod validation
 
         // 1. Fetch from DB
         const latDelta = radius / 111;
         const lngDelta = radius / (111 * Math.cos((lat * Math.PI) / 180));
 
+        // Enforce hard cap of 50 records inside the SQL query to protect DB
         const [dbRows] = await pool.execute(
             `SELECT * FROM masjids 
              WHERE latitude BETWEEN ? AND ? 
-             AND longitude BETWEEN ? AND ?`,
+             AND longitude BETWEEN ? AND ?
+             LIMIT 50`,
             [lat - latDelta, lat + latDelta, lng - lngDelta, lng + lngDelta]
         );
 
@@ -1453,20 +1839,32 @@ app.get('/searchMasjidsWithOla', async (req, res) => {
             }
         }
 
-        // 2. Fetch from OLA Nearby Search API
+        // 2. Fetch from OLA Nearby Search API (with 15-minute grid cache & 429 protection)
         let olaMasjids = [];
         const olaApiKey = process.env.OLA_API_KEY;
-        if (olaApiKey) {
+        const searchGridKey = `${lat.toFixed(2)}_${lng.toFixed(2)}_${radius}`;
+        const lastSearchedTime = olaSearchCache.get(searchGridKey);
+        const shouldCallOla = olaApiKey && 
+                              (!lastSearchedTime || (Date.now() - lastSearchedTime > 15 * 60 * 1000)) &&
+                              (Date.now() > olaCooldownUntil);
+
+        if (shouldCallOla) {
             try {
+                olaSearchCache.set(searchGridKey, Date.now());
                 // Using Advanced Nearby Search API for richer data, wider radius, and larger limits
                 const olaUrl = `https://api.olamaps.io/places/v1/nearbysearch/advanced?location=${lat},${lng}&types=mosque&radius=${Math.round(radius * 1000)}&limit=50&withCentroid=true&api_key=${olaApiKey}`;
                 console.log(`[OLA API] Fetching: ${olaUrl.replace(olaApiKey, 'HIDDEN')}`);
                 const olaRes = await fetch(olaUrl, {
                     headers: { 'X-Request-Id': 'ALWAQT-BACKEND' },
                 });
-                const olaData = await olaRes.json();
-                const olaPredictions = olaData.predictions || olaData.results || [];
-                console.log(`[OLA API] Received ${olaPredictions.length} predictions`);
+
+                if (olaRes.status === 429) {
+                    console.warn('⚠️ OLA NearbySearch 429 (Rate limit reached). Cooldown active for 60s.');
+                    olaCooldownUntil = Date.now() + 60 * 1000;
+                } else if (olaRes.ok) {
+                    const olaData = await olaRes.json();
+                    const olaPredictions = olaData.predictions || olaData.results || [];
+                    console.log(`[OLA API] Received ${olaPredictions.length} predictions`);
 
                 for (const place of olaPredictions) {
                     const placeLat = place.geometry?.location?.lat;
@@ -1542,6 +1940,7 @@ app.get('/searchMasjidsWithOla', async (req, res) => {
                         console.warn('OLA import skip:', insertErr.message);
                     }
                 }
+                }
             } catch (olaErr) {
                 console.error('OLA API error:', olaErr.message);
                 // Continue with DB results even if OLA fails
@@ -1572,12 +1971,9 @@ app.get('/api/masjid/:id/muazzins/count', async (req, res) => {
     }
 });
 
-app.post('/api/muazzin/register', async (req, res) => {
+app.post('/api/muazzin/register', validateBody(muazzinRegisterSchema), async (req, res) => {
     try {
         const { masjidId, name, email, phone, address } = req.body;
-        if (!masjidId || !name || !email || !phone || !address) {
-            return res.status(400).json({ error: 'All fields are required' });
-        }
 
         const [result] = await pool.execute(
             'INSERT INTO muazzins (masjid_id, name, email, phone, address) VALUES (?, ?, ?, ?, ?)',
@@ -1633,11 +2029,40 @@ app.get('/api/muazzin/my-masjid', async (req, res) => {
 });
 
 // ============================================
-// Error handling
+// Centralized Production Error Handling Middleware
 // ============================================
 app.use((err, req, res, next) => {
-    console.error('Unhandled error:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    // 1. Handle Zod validation errors
+    if (err instanceof z.ZodError) {
+        return res.status(400).json({
+            error: 'Validation error',
+            details: err.errors.map(e => ({
+                path: e.path.join('.'),
+                message: e.message
+            }))
+        });
+    }
+
+    // 2. Handle Multer / File Upload errors
+    if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({ error: 'File size limit exceeded. Maximum 5MB allowed.' });
+    }
+    if (err.message && err.message.includes('Only JPEG, PNG, and WebP')) {
+        return res.status(400).json({ error: err.message });
+    }
+
+    // 3. Log all unhandled/general server/database errors internally
+    console.error('Unhandled server exception:', {
+        message: err.message,
+        code: err.code,
+        stack: err.stack,
+        sql: err.sql || undefined // log SQL syntax error internally if available
+    });
+
+    // 4. Return generic, safe JSON error response to client (never leak stack or SQL details)
+    res.status(500).json({
+        error: 'An unexpected error occurred on the server. Please try again later.'
+    });
 });
 
 // ============================================

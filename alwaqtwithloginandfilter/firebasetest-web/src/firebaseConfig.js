@@ -19,3 +19,18 @@ export const googleProvider = new GoogleAuthProvider();
 export const signInWithGoogle = () => signInWithPopup(auth, googleProvider);
 export const firebaseSignOut = () => signOut(auth);
 export const db = getFirestore(app);
+
+export async function getBearerToken() {
+  if (auth.currentUser) {
+    try {
+      const token = await auth.currentUser.getIdToken();
+      if (token) {
+        localStorage.setItem("@authToken", token);
+        return token;
+      }
+    } catch (e) {
+      console.warn("Could not retrieve fresh Firebase token:", e);
+    }
+  }
+  return localStorage.getItem("@authToken") || null;
+}

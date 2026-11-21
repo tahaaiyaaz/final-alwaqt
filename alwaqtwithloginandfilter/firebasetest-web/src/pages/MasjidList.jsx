@@ -42,7 +42,7 @@ export default function MasjidList() {
     });
 
     return (
-        <div style={{ padding: 20 }}>
+        <div className="safe-page-container">
             {/* Header */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
                 <div style={{ display: "flex", alignItems: "center" }}>
